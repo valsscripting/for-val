@@ -1,0 +1,1538 @@
+--[[
+    Delta Executor Compatible Pet Spawner - YOUR GUI + NEON CAVE FUNCTIONS
+    discord.gg/25ms
+]]
+
+-- Wait for game to load
+repeat task.wait() until game:IsLoaded() and game.Players.LocalPlayer
+
+-- Get services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Suppress warnings
+local oldWarn = warn
+warn = function(message)
+    if not message:find("ailments_completed") and not message:find("fusing") and not message:find("spirits") then
+        oldWarn(message)
+    end
+end
+
+-- Set thread identity
+local oldIdentity = set_thread_identity and set_thread_identity(8) or 8
+
+-- ========== LOAD FSYS ==========
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local ClientData = Fsys.load("ClientData")
+local KindDB = Fsys.load("KindDB")
+local RouterClient = Fsys.load("RouterClient")
+local DownloadClient = Fsys.load("DownloadClient")
+local InventoryDB = Fsys.load("InventoryDB")
+local UIManager = Fsys.load("UIManager")
+local AnimationManager = Fsys.load("AnimationManager")
+local PetRigs = Fsys.load("new:PetRigs")
+local AilmentsClient = Fsys.load("new:AilmentsClient")
+local AilmentsDB = Fsys.load("new:AilmentsDB")
+local CharWrapperClient = Fsys.load("CharWrapperClient")
+local NeonVFXHelper = Fsys.load("NeonVFXHelper")
+local Maid = Fsys.load("Maid")
+local TweenPromise = Fsys.load("TweenPromise")
+local Promise = Fsys.load("package:Promise")
+local CharacterHider = Fsys.load("CharacterHider")
+local CharacterScale = Fsys.load("CharacterScale")
+local GameplayFX = Fsys.load("GameplayFX")
+local SoundPlayer = Fsys.load("SoundPlayer")
+local SoundDB = Fsys.load("SoundDB")
+local Music = Fsys.load("Music")
+
+-- ========== ORIGINAL EQUIP SYSTEM FROM YOUR SCRIPT ==========
+local routerInit = require(ReplicatedStorage.Fsys).load("RouterClient").init
+local originalRemotes = debug.getupvalue(routerInit, 7)
+local vu5 = {}
+for i, v in pairs(originalRemotes) do
+    v.Name = i
+    vu5[i] = v
+end
+
+-- Find trade license
+local licenseUniqueId
+for i, v in pairs(ClientData.get("inventory").toys) do
+    if v.id == "trade_license" then
+        licenseUniqueId = i
+        break
+    end
+end
+
+-- Hooked functions
+local v19 = {
+    ["ToolAPI/Equip"] = function(p15, p16, ...)
+        if p16 == licenseUniqueId then
+            UIManager.set_app_visibility("TradeHistoryApp", true)
+        end
+        return vu5["ToolAPI/Equip"](p15, p16, ...)
+    end,
+    ["ToolAPI/Unequip"] = function(p17, p18)
+        if p18 == licenseUniqueId then
+            UIManager.set_app_visibility("TradeHistoryApp", false)
+        end
+        return vu5["ToolAPI/Unequip"](p17, p18)
+    end
+}
+
+debug.setupvalue(routerInit, 7, setmetatable(v19, {
+    __index = vu5,
+    __newindex = function(t, k, v)
+        if k == "ToolAPI/Equip" or k == "ToolAPI/Unequip" then
+            rawset(t, k, v)
+        else
+            vu5[k] = v
+        end
+    end
+}))
+
+-- Override RouterClient.get
+local vu183 = RouterClient.get
+local function v185(func)
+    return { InvokeServer = function(_, ...) return func(...) end }
+end
+
+-- ========== CACHES ==========
+local vu64 = {}  -- model cache
+local vu65 = {}  -- spawned pets cache
+local vu66 = nil -- current equipped pet
+local vu67 = nil -- riding pet
+local vu68 = nil -- animation
+local petTasks = {}
+
+-- Helper functions from your script
+local function vu74()
+    return HttpService:GenerateGUID(false)
+end
+
+local function vu77(p75)
+    if vu64[p75] then return vu64[p75] end
+    vu64[p75] = DownloadClient.promise_download_copy("Pets", p75):expect()
+    return vu64[p75]
+end
+
+local function vu73(p69, p70)
+    local v71 = ClientData.get(p69)
+    local v72 = table.clone(v71)
+    ClientData.predict(p69, p70(v72))
+end
+
+-- ========== PET SPAWNING IN INVENTORY ==========
+local function vu83(p78, p79)
+    local v80 = vu74()
+    local v81 = KindDB[p78]
+    if not v81 then return nil end
+    set_thread_identity(2)
+    local v82 = {
+        unique = v80,
+        category = "pets",
+        id = p78,
+        kind = v81.kind,
+        newness_order = math.random(1, 900000),
+        properties = p79 or {},
+        name = InventoryDB.pets[p78] and InventoryDB.pets[p78].name or p78,
+        age = (p79 and p79.age) or 6,
+        neon = (p79 and p79.neon) or false,
+        mega_neon = (p79 and p79.mega_neon) or false,
+        neon_level = (p79 and p79.neon_level) or 0,
+        task_progress = (p79 and p79.task_progress) or 0,
+        task_completed = (p79 and p79.task_completed) or 0,
+        friendship_level = (p79 and p79.friendship_level) or 1,
+        _source = "4fire"
+    }
+    ClientData.get("inventory").pets[v80] = v82
+    vu65[v80] = { data = v82, model = nil }
+    set_thread_identity(8)
+    return v82
+end
+
+local function vu88(p84)
+    local v85 = vu74()
+    local v86 = KindDB[p84]
+    if not v86 then return nil end
+    set_thread_identity(2)
+    local v87 = {
+        unique = v85,
+        category = "toys",
+        id = p84,
+        kind = v86.kind,
+        newness_order = math.random(1, 900000),
+        properties = {},
+        name = InventoryDB.toys[p84] and InventoryDB.toys[p84].name or p84,
+        _source = "4fire"
+    }
+    ClientData.get("inventory").toys[v85] = v87
+    set_thread_identity(8)
+    return v87
+end
+
+-- ========== NEON EFFECTS ==========
+local function vu97(p89, p90)
+    local v91 = p89:FindFirstChild("PetModel")
+    if v91 and p90 and p90.neon_parts then
+        for partName, partData in pairs(p90.neon_parts) do
+            local part = PetRigs.get(v91).get_geo_part(v91, partName)
+            if part then
+                part.Material = partData.Material or Enum.Material.Neon
+                part.Color = partData.Color or Color3.new(1,1,1)
+            end
+        end
+    end
+end
+
+-- ========== WRAPPERS & STATE MANAGERS ==========
+local function vu100(wrapper)
+    vu73("pet_char_wrappers", function(current)
+        wrapper.unique = #current + 1
+        wrapper.index = #current + 1
+        table.insert(current, wrapper)
+        return current
+    end)
+end
+
+local function vu103(state)
+    vu73("pet_state_managers", function(current)
+        table.insert(current, state)
+        return current
+    end)
+end
+
+local function vu119(petUnique)
+    vu73("pet_char_wrappers", function(current)
+        for i, wrapper in ipairs(current) do
+            if wrapper.pet_unique == petUnique then
+                table.remove(current, i)
+                for j, w in ipairs(current) do
+                    w.unique = j
+                    w.index = j
+                end
+                break
+            end
+        end
+        return current
+    end)
+end
+
+local function vu126(petUnique)
+    local pet = vu65[petUnique]
+    if pet and pet.model then
+        vu73("pet_state_managers", function(current)
+            for i, state in ipairs(current) do
+                if state.char == pet.model then
+                    local new = table.clone(current)
+                    new[i] = table.clone(new[i])
+                    new[i].states = {}
+                    return new
+                end
+            end
+            return current
+        end)
+    end
+end
+
+local function vu135(petUnique, stateId)
+    local pet = vu65[petUnique]
+    if pet and pet.model then
+        vu73("pet_state_managers", function(current)
+            for i, state in ipairs(current) do
+                if state.char == pet.model then
+                    local new = table.clone(current)
+                    new[i] = table.clone(new[i])
+                    new[i].states = {{id = stateId}}
+                    return new
+                end
+            end
+            return current
+        end)
+    end
+end
+
+local function vu141(model)
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return false end
+    local ridePos = model:FindFirstChild("RidePosition", true)
+    if not ridePos then return false end
+    local attachment = Instance.new("Attachment")
+    attachment.Parent = ridePos
+    attachment.Position = Vector3.new(0, 1.237, 0)
+    attachment.Name = "SourceAttachment"
+    local constraint = Instance.new("RigidConstraint")
+    constraint.Name = "StateConnection"
+    constraint.Attachment0 = attachment
+    constraint.Attachment1 = char.PrimaryPart.RootAttachment
+    constraint.Parent = char
+    return true
+end
+
+local function vu144()
+    vu73("state_manager", function(current)
+        local new = table.clone(current)
+        new.states = {}
+        new.is_sitting = false
+        return new
+    end)
+end
+
+local function vu148(stateId)
+    vu73("state_manager", function(current)
+        local new = table.clone(current)
+        new.states = {{id = stateId}}
+        new.is_sitting = true
+        return new
+    end)
+end
+
+local function vu154(petUnique)
+    local pet = vu65[petUnique]
+    if pet and pet.model then
+        vu73("pet_state_managers", function(current)
+            for i, state in ipairs(current) do
+                if state.char == pet.model then
+                    table.remove(current, i)
+                    break
+                end
+            end
+            return current
+        end)
+    end
+end
+
+local function vu162(petUnique)
+    local pet = vu65[petUnique]
+    if pet and pet.model then
+        if vu68 then vu68:Stop(); vu68:Destroy() end
+        local attachment = pet.model:FindFirstChild("SourceAttachment", true)
+        if attachment then attachment:Destroy() end
+        if LocalPlayer.Character then
+            for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+                if part:IsA("BasePart") and part:GetAttribute("HaveMass") then
+                    part.Massless = false
+                end
+            end
+        end
+        vu126(petUnique)
+        vu144()
+        pet.model:ScaleTo(1)
+        vu67 = nil
+    end
+end
+
+local function vu172(petUnique, stateType, petState)
+    local pet = vu65[petUnique]
+    if pet and pet.model and LocalPlayer.Character and LocalPlayer.Character.PrimaryPart then
+        vu67 = petUnique
+        vu135(petUnique, petState)
+        vu148(stateType)
+        pet.model:ScaleTo(2)
+        vu141(pet.model)
+        vu68 = LocalPlayer.Character.Humanoid.Animator:LoadAnimation(AnimationManager.get_track("PlayerRidingPet"))
+        LocalPlayer.Character.Humanoid.Sit = true
+        for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") and not part.Massless then
+                part.Massless = true
+                part:SetAttribute("HaveMass", true)
+            end
+        end
+        vu68:Play()
+    end
+end
+
+local function vu174(petUnique) vu172(petUnique, "PlayerFlyingPet", "PetBeingFlown") end
+local function vu176(petUnique) vu172(petUnique, "PlayerRidingPet", "PetBeingRidden") end
+
+local function vu179(petData)
+    local pet = vu65[petData.unique]
+    if pet and pet.model then
+        vu162(petData.unique)
+        vu119(petData.unique)
+        vu154(petData.unique)
+        pet.model:Destroy()
+        pet.model = nil
+        if vu66 and vu66.unique == petData.unique then vu66 = nil end
+        petTasks[petData.unique] = nil
+    end
+end
+
+-- ========== FIXED vu182 - SPAWNS PET MODEL WITH MOVEMENT ==========
+local function vu182(petData)
+    if petData.category ~= "pets" then return false end
+    
+    -- Unequip current pet
+    if vu66 then
+        local old = vu65[vu66.unique]
+        if old and old.model then vu179(vu66) end
+    end
+    
+    -- Get model template
+    local modelTemplate = vu77(petData.kind)
+    if not modelTemplate then return false end
+    
+    local petModel = modelTemplate:Clone()
+    petModel.Parent = workspace
+    
+    -- Position near player
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        petModel:SetPrimaryPartCFrame(LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(5, 0, 0))
+    else
+        petModel:SetPrimaryPartCFrame(CFrame.new(0, 10, 0))
+    end
+    
+    vu65[petData.unique].model = petModel
+    
+    -- Apply neon effects
+    if petData.properties.neon or petData.properties.mega_neon then
+        vu97(petModel, KindDB[petData.id])
+    end
+    
+    vu66 = petData
+    
+    -- Add to pet_char_wrappers with following target (essential for AI)
+    vu100({
+        char = petModel,
+        mega_neon = petData.properties.mega_neon,
+        neon = petData.properties.neon,
+        player = LocalPlayer,
+        entity_controller = LocalPlayer,
+        controller = LocalPlayer,
+        rp_name = petData.properties.rp_name or "",
+        pet_trick_level = petData.properties.pet_trick_level or 1,
+        pet_unique = petData.unique,
+        pet_id = petData.id,
+        location = {
+            full_destination_id = "housing",
+            destination_id = "housing",
+            house_owner = LocalPlayer
+        },
+        pet_progression = {
+            age = petData.properties.age or 6,
+            percentage = 0.99,
+        },
+        are_colors_sealed = false,
+        is_pet = true,
+        following_target = LocalPlayer.Character,
+        current_state = "follow",
+        friendship_level = petData.properties.friendship_level or 1
+    })
+    
+    -- Add to pet_state_managers with follow state
+    vu103({
+        char = petModel,
+        player = LocalPlayer,
+        store_key = "pet_state_managers",
+        is_sitting = false,
+        chars_connected_to_me = {},
+        states = {
+            {
+                id = "PetBeingFollow",
+                target = LocalPlayer.Character
+            }
+        },
+        walk_speed = 16,
+        run_speed = 24,
+        current_animation = "walk"
+    })
+    
+    return true
+end
+
+-- ========== BYPASS EQUIP HANDLERS ==========
+local vu189 = v185(function(p186, p187)
+    local pet = vu65[p186]
+    if not pet then
+        local petData = ClientData.get("inventory").pets[p186]
+        if petData then
+            vu182(petData)
+            return true, {action = "equip", is_server = true}
+        end
+        return vu183("ToolAPI/Equip"):InvokeServer(p186, p187)
+    end
+    vu182(pet.data)
+    return true, {action = "equip", is_server = true}
+end)
+
+local vu192 = v185(function(p190)
+    local pet = vu65[p190]
+    if not pet then
+        return vu183("ToolAPI/Unequip"):InvokeServer(p190)
+    end
+    vu179(pet.data)
+    return true, {action = "unequip", is_server = true}
+end)
+
+local vu194 = v185(function(p193) vu176(p193.pet_unique) end)
+local vu196 = v185(function(p195) vu174(p195.pet_unique) end)
+local vu197 = v185(function() if vu67 then vu162(vu67) end end)
+local vu199 = { FireServer = function() if vu67 then vu162(vu67) end end }
+
+-- Store original for DoNeonFusion
+local originalDoNeonFusion = vu183("PetAPI/DoNeonFusion")
+
+-- Simple inventory refresh
+local function refreshInventory()
+    pcall(function() ClientData.predict("_inventory_version", function(c) return (c or 0)+1 end) end)
+end
+
+-- Force inventory refresh with toggle
+local function forceInventoryRefresh()
+    pcall(function()
+        ClientData.predict("_inventory_version", function(c) return (c or 0) + 1 end)
+        local args = { [1] = "inventory" }
+        local openRemote = ReplicatedStorage.Fsys:FindFirstChild("OpenApp")
+        local closeRemote = ReplicatedStorage.Fsys:FindFirstChild("CloseApp")
+        if openRemote then openRemote:FireServer(unpack(args)) end
+        task.wait(0.1)
+        if closeRemote then closeRemote:FireServer(unpack(args)) end
+    end)
+end
+
+-- ========== NEON CAVE FUSION FUNCTION ==========
+local vuFusionBypass = {
+    InvokeServer = function(_, petUniques)
+        -- Check if ALL pets are fake (from our spawner)
+        local allFake = true
+        local fakePets = {}
+
+        for _, uniqueId in ipairs(petUniques) do
+            if vu65[uniqueId] then
+                table.insert(fakePets, vu65[uniqueId])
+            else
+                allFake = false
+                break
+            end
+        end
+
+        if not allFake or #fakePets ~= 4 then
+            return originalDoNeonFusion:InvokeServer(petUniques)
+        end
+
+        local firstPet = fakePets[1].data
+        local isNeonFusion = firstPet.properties.neon == true
+
+        -- Validate all pets are same species and same neon status
+        for i = 2, 4 do
+            local pet = fakePets[i].data
+            if pet.kind ~= firstPet.kind then
+                warn("Fusion failed: Different species")
+                return nil, nil
+            end
+            if (pet.properties.neon or false) ~= isNeonFusion then
+                warn("Fusion failed: Mixed neon/regular")
+                return nil, nil
+            end
+        end
+
+        -- Create new fused pet properties
+        local newProperties = {
+            pet_trick_level = 5,
+            age = 1,
+            ailments_completed = 0,
+            rideable = firstPet.properties.rideable or false,
+            flyable = firstPet.properties.flyable or false,
+            rp_name = firstPet.properties.rp_name or "",
+            friendship_level = 1
+        }
+
+        if isNeonFusion then
+            newProperties.mega_neon = true
+            newProperties.neon = false
+        else
+            newProperties.neon = true
+            newProperties.mega_neon = false
+        end
+
+        -- Remove old pets from inventory
+        local identity = get_thread_identity and get_thread_identity() or 8
+        set_thread_identity(2)
+        local inventory = ClientData.get("inventory")
+        if inventory and inventory.pets then
+            for _, uniqueId in ipairs(petUniques) do
+                inventory.pets[uniqueId] = nil
+            end
+        end
+        set_thread_identity(identity)
+
+        -- Remove old pets from cache
+        for _, uniqueId in ipairs(petUniques) do
+            if vu65[uniqueId] and vu65[uniqueId].model then
+                vu179(vu65[uniqueId].data)
+            end
+            vu65[uniqueId] = nil
+        end
+
+        -- Create new fused pet
+        local newPet = vu83(firstPet.id, newProperties)
+        if not newPet then
+            return nil, nil
+        end
+
+        -- Refresh inventory UI
+        task.defer(function()
+            if UIManager and UIManager.apps and UIManager.apps.BackpackApp then
+                UIManager.apps.BackpackApp:refresh_rendered_items()
+            end
+        end)
+
+        -- Play fusion visual effect
+        task.spawn(function()
+            task.wait(0.1)
+            local petWrapper = nil
+            for _, wrapper in pairs(ClientData.get("pet_char_wrappers")) do
+                if wrapper.pet_unique == newPet.unique then
+                    petWrapper = wrapper
+                    break
+                end
+            end
+            if petWrapper then
+                local fusionType = isNeonFusion and "mega_neon" or "neon"
+                NeonVFXHelper.play_fusion_vfx(petWrapper, fusionType)
+            end
+        end)
+
+        return newPet.unique, firstPet.kind
+    end
+}
+
+-- ========== OVERRIDE ROUTERCLIENT.GET ==========
+function RouterClient.get(p200)
+    if p200 == "ToolAPI/Equip" then return vu189
+    elseif p200 == "ToolAPI/Unequip" then return vu192
+    elseif p200 == "AdoptAPI/RidePet" then return vu194
+    elseif p200 == "AdoptAPI/FlyPet" then return vu196
+    elseif p200 == "AdoptAPI/ExitSeatStatesYield" then return vu197
+    elseif p200 == "AdoptAPI/ExitSeatStates" then return vu199
+    elseif p200 == "PetAPI/DoNeonFusion" then return vuFusionBypass
+    else return vu183(p200) end
+end
+
+-- Unequip all at start
+task.spawn(function()
+    task.wait(1)
+    for _, w in pairs(ClientData.get("pet_char_wrappers") or {}) do
+        if w.player == LocalPlayer then
+            vu183("ToolAPI/Unequip"):InvokeServer(w.pet_unique)
+        end
+    end
+end)
+
+-- Helper functions for names
+function GetPetByName(name)
+    name = name:lower()
+    for id, data in pairs(InventoryDB.pets) do
+        if data.name:lower() == name then return id end
+    end
+    return false
+end
+
+function GetToyByName(name)
+    name = name:lower()
+    for id, data in pairs(InventoryDB.toys) do
+        if data.name:lower() == name then return id end
+    end
+    return false
+end
+
+-- Auto-capitalize helper
+local function autoCapitalize(text)
+    if not text or text == "" then
+        return text
+    end
+
+    local result = ""
+    local capitalizeNext = true
+
+    for i = 1, #text do
+        local char = text:sub(i, i)
+        if char == " " then
+            capitalizeNext = true
+            result = result .. char
+        elseif capitalizeNext then
+            result = result .. char:upper()
+            capitalizeNext = false
+        else
+            result = result .. char:lower()
+        end
+    end
+
+    return result
+end
+
+-- ========== YOUR ORIGINAL GUI (FULL VERSION) ==========
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PetSpawner"
+screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+-- Main frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 450, 0, 800)
+mainFrame.Position = UDim2.new(0.5, -225, 0.5, -400)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20,20,30)
+mainFrame.BackgroundTransparency = 0.1
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0,10)
+corner.Parent = mainFrame
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(100,200,255)
+stroke.Thickness = 2
+stroke.Parent = mainFrame
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-40,0,40)
+title.Position = UDim2.new(0,0,0,0)
+title.BackgroundTransparency = 1
+title.Text = "🐾 DormiChanels Neon Maker🐾"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 20
+title.TextColor3 = Color3.new(1,1,1)
+title.Parent = mainFrame
+
+-- Control buttons
+local controlFrame = Instance.new("Frame")
+controlFrame.Size = UDim2.new(0, 130, 0, 30)
+controlFrame.Position = UDim2.new(1, -140, 0, 5)
+controlFrame.BackgroundTransparency = 1
+controlFrame.Parent = mainFrame
+
+local function makeButton(txt, posX, col, size)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0,30,0,30)
+    btn.Position = UDim2.new(posX,0,0,0)
+    btn.Text = txt
+    btn.BackgroundColor3 = col
+    btn.Font = Enum.Font.GothamBold
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextSize = size or 16
+    btn.Parent = controlFrame
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0,6)
+    btnCorner.Parent = btn
+    return btn
+end
+
+local lockBtn = makeButton("🔓", 0, Color3.fromRGB(60,60,80), 16)
+local smallerBtn = makeButton("−", 0.27, Color3.fromRGB(60,60,80), 20)
+local biggerBtn = makeButton("+", 0.54, Color3.fromRGB(60,60,80), 20)
+local refreshBtn = makeButton("🔄", 0.81, Color3.fromRGB(0,150,200), 12)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0,30,0,30)
+closeBtn.Position = UDim2.new(1,-35,0,5)
+closeBtn.Text = "X"
+closeBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.TextSize = 18
+closeBtn.Parent = mainFrame
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0,6)
+closeCorner.Parent = closeBtn
+closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+
+-- Lock/unlock functionality
+local isLocked = false
+lockBtn.MouseButton1Click:Connect(function()
+    isLocked = not isLocked
+    mainFrame.Draggable = not isLocked
+    lockBtn.Text = isLocked and "🔒" or "🔓"
+    lockBtn.BackgroundColor3 = isLocked and Color3.fromRGB(80,80,100) or Color3.fromRGB(60,60,80)
+end)
+
+-- Resize
+local currentSize = 1.0
+smallerBtn.MouseButton1Click:Connect(function()
+    currentSize = math.max(0.7, currentSize-0.1)
+    mainFrame.Size = UDim2.new(0,450*currentSize,0,800*currentSize)
+    mainFrame.Position = UDim2.new(0.5,-225*currentSize,0.5,-400*currentSize)
+end)
+biggerBtn.MouseButton1Click:Connect(function()
+    currentSize = math.min(1.5, currentSize+0.1)
+    mainFrame.Size = UDim2.new(0,450*currentSize,0,800*currentSize)
+    mainFrame.Position = UDim2.new(0.5,-225*currentSize,0.5,-400*currentSize)
+end)
+refreshBtn.MouseButton1Click:Connect(function() forceInventoryRefresh() notify("🔄 Inventory refreshed!") end)
+
+-- Tabs
+local tabFrame = Instance.new("Frame")
+tabFrame.Size = UDim2.new(1,-20,0,40)
+tabFrame.Position = UDim2.new(0,10,0,45)
+tabFrame.BackgroundTransparency = 1
+tabFrame.Parent = mainFrame
+
+local fusionTab = Instance.new("TextButton")
+fusionTab.Size = UDim2.new(0.33,-4,1,0)
+fusionTab.Position = UDim2.new(0,0,0,0)
+fusionTab.Text = "⚡ FUSION ⚡"
+fusionTab.BackgroundColor3 = Color3.fromRGB(100,20,150)
+fusionTab.Font = Enum.Font.GothamBold
+fusionTab.TextColor3 = Color3.new(1,1,1)
+fusionTab.TextSize = 14
+fusionTab.Parent = tabFrame
+local tabCorner1 = Instance.new("UICorner")
+tabCorner1.CornerRadius = UDim.new(0,8)
+tabCorner1.Parent = fusionTab
+
+local dressUpTab = Instance.new("TextButton")
+dressUpTab.Size = UDim2.new(0.33,-4,1,0)
+dressUpTab.Position = UDim2.new(0.335,0,0,0)
+dressUpTab.Text = "👗 DRESS UP 👗"
+dressUpTab.BackgroundColor3 = Color3.fromRGB(200,100,200)
+dressUpTab.Font = Enum.Font.GothamBold
+dressUpTab.TextColor3 = Color3.new(1,1,1)
+dressUpTab.TextSize = 14
+dressUpTab.Parent = tabFrame
+local tabCorner2 = Instance.new("UICorner")
+tabCorner2.CornerRadius = UDim.new(0,8)
+tabCorner2.Parent = dressUpTab
+
+local toysTab = Instance.new("TextButton")
+toysTab.Size = UDim2.new(0.33,-4,1,0)
+toysTab.Position = UDim2.new(0.67,0,0,0)
+toysTab.Text = "🎮 TOYS 🎮"
+toysTab.BackgroundColor3 = Color3.fromRGB(120,60,0)
+toysTab.Font = Enum.Font.GothamBold
+toysTab.TextColor3 = Color3.new(1,1,1)
+toysTab.TextSize = 14
+toysTab.Parent = tabFrame
+local tabCorner3 = Instance.new("UICorner")
+tabCorner3.CornerRadius = UDim.new(0,8)
+tabCorner3.Parent = toysTab
+
+-- Content frames
+local fusionFrame = Instance.new("ScrollingFrame")
+fusionFrame.Size = UDim2.new(1,-20,1,-100)
+fusionFrame.Position = UDim2.new(0,10,0,90)
+fusionFrame.BackgroundTransparency = 1
+fusionFrame.ScrollBarThickness = 8
+fusionFrame.CanvasSize = UDim2.new(0,0,0,900)
+fusionFrame.Visible = true
+fusionFrame.Parent = mainFrame
+
+local dressUpFrame = Instance.new("ScrollingFrame")
+dressUpFrame.Size = UDim2.new(1,-20,1,-100)
+dressUpFrame.Position = UDim2.new(0,10,0,90)
+dressUpFrame.BackgroundTransparency = 1
+dressUpFrame.ScrollBarThickness = 8
+dressUpFrame.CanvasSize = UDim2.new(0,0,0,500)
+dressUpFrame.Visible = false
+dressUpFrame.Parent = mainFrame
+
+local toysFrame = Instance.new("ScrollingFrame")
+toysFrame.Size = UDim2.new(1,-20,1,-100)
+toysFrame.Position = UDim2.new(0,10,0,90)
+toysFrame.BackgroundTransparency = 1
+toysFrame.ScrollBarThickness = 8
+toysFrame.CanvasSize = UDim2.new(0,0,0,400)
+toysFrame.Visible = false
+toysFrame.Parent = mainFrame
+
+-- Tab switching
+fusionTab.MouseButton1Click:Connect(function()
+    fusionFrame.Visible = true; dressUpFrame.Visible = false; toysFrame.Visible = false
+    fusionTab.BackgroundColor3 = Color3.fromRGB(100,20,150)
+    dressUpTab.BackgroundColor3 = Color3.fromRGB(200,100,200)
+    toysTab.BackgroundColor3 = Color3.fromRGB(120,60,0)
+end)
+dressUpTab.MouseButton1Click:Connect(function()
+    fusionFrame.Visible = false; dressUpFrame.Visible = true; toysFrame.Visible = false
+    fusionTab.BackgroundColor3 = Color3.fromRGB(80,0,120)
+    dressUpTab.BackgroundColor3 = Color3.fromRGB(220,120,220)
+    toysTab.BackgroundColor3 = Color3.fromRGB(120,60,0)
+end)
+toysTab.MouseButton1Click:Connect(function()
+    fusionFrame.Visible = false; dressUpFrame.Visible = false; toysFrame.Visible = true
+    fusionTab.BackgroundColor3 = Color3.fromRGB(80,0,120)
+    dressUpTab.BackgroundColor3 = Color3.fromRGB(200,100,200)
+    toysTab.BackgroundColor3 = Color3.fromRGB(150,80,20)
+end)
+
+-- Notification
+local function notify(msg, isError)
+    local notif = Instance.new("TextLabel")
+    notif.Size = UDim2.new(0,300,0,40)
+    notif.Position = UDim2.new(0.5,-150,0,-50)
+    notif.BackgroundColor3 = isError and Color3.fromRGB(255,50,50) or Color3.fromRGB(50,255,50)
+    notif.BackgroundTransparency = 0.2
+    notif.TextColor3 = Color3.new(1,1,1)
+    notif.Font = Enum.Font.GothamBold
+    notif.TextSize = 14
+    notif.Text = msg
+    notif.Parent = screenGui
+    local notifCorner = Instance.new("UICorner")
+    notifCorner.CornerRadius = UDim.new(0,8)
+    notifCorner.Parent = notif
+    TweenService:Create(notif, TweenInfo.new(0.3), {Position = UDim2.new(0.5,-150,0,10)}):Play()
+    task.delay(2, function()
+        TweenService:Create(notif, TweenInfo.new(0.3), {Position = UDim2.new(0.5,-150,0,-50)}):Play()
+        task.wait(0.3)
+        notif:Destroy()
+    end)
+end
+
+-- ========== FUSION TAB CONTENT ==========
+local yPos = 10
+
+local function createLabel(text, y)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.3,0,0,30)
+    label.Position = UDim2.new(0.05,0,0,y)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 16
+    label.TextColor3 = Color3.fromRGB(200,200,255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = fusionFrame
+    return label
+end
+
+local function createInput(placeholder, y)
+    local input = Instance.new("TextBox")
+    input.Size = UDim2.new(0.6,0,0,35)
+    input.Position = UDim2.new(0.35,0,0,y)
+    input.BackgroundColor3 = Color3.fromRGB(40,40,50)
+    input.BackgroundTransparency = 0.1
+    input.TextColor3 = Color3.new(1,1,1)
+    input.Font = Enum.Font.Gotham
+    input.TextSize = 14
+    input.PlaceholderText = placeholder
+    input.Text = ""
+    input.ClearTextOnFocus = false
+    input.Parent = fusionFrame
+    local inputCorner = Instance.new("UICorner")
+    inputCorner.CornerRadius = UDim.new(0,6)
+    inputCorner.Parent = input
+    return input
+end
+
+local petInput = createInput("Pet name (e.g., Dragon)", yPos)
+createLabel("Pet:", yPos); yPos = yPos+45
+
+local rpInput = createInput("Custom name (optional)", yPos)
+createLabel("Name:", yPos); yPos = yPos+45
+
+-- Fusion Type
+createLabel("Type:", yPos)
+local normalBtn = Instance.new("TextButton")
+normalBtn.Size = UDim2.new(0.18,0,0,35)
+normalBtn.Position = UDim2.new(0.35,0,0,yPos)
+normalBtn.Text = "Normal"
+normalBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+normalBtn.Font = Enum.Font.GothamBold
+normalBtn.TextColor3 = Color3.new(1,1,1)
+normalBtn.TextSize = 12
+normalBtn.Parent = fusionFrame
+local normalCorner = Instance.new("UICorner")
+normalCorner.CornerRadius = UDim.new(0,6)
+normalCorner.Parent = normalBtn
+
+local neonBtn = normalBtn:Clone()
+neonBtn.Position = UDim2.new(0.54,0,0,yPos)
+neonBtn.Text = "Neon"
+neonBtn.Parent = fusionFrame
+
+local megaBtn = normalBtn:Clone()
+megaBtn.Position = UDim2.new(0.73,0,0,yPos)
+megaBtn.Text = "Mega"
+megaBtn.BackgroundColor3 = Color3.fromRGB(170,0,255)
+megaBtn.Parent = fusionFrame
+
+local selectedType = "Mega"
+normalBtn.MouseButton1Click:Connect(function()
+    selectedType = "Normal"
+    normalBtn.BackgroundColor3 = Color3.fromRGB(100,100,200)
+    neonBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+    megaBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+end)
+neonBtn.MouseButton1Click:Connect(function()
+    selectedType = "Neon"
+    normalBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+    neonBtn.BackgroundColor3 = Color3.fromRGB(0,200,100)
+    megaBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+end)
+megaBtn.MouseButton1Click:Connect(function()
+    selectedType = "Mega"
+    normalBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+    neonBtn.BackgroundColor3 = Color3.fromRGB(60,60,80)
+    megaBtn.BackgroundColor3 = Color3.fromRGB(170,0,255)
+end)
+yPos = yPos+45
+
+-- Age Selection
+createLabel("Age:", yPos)
+local ageContainer = Instance.new("Frame")
+ageContainer.Size = UDim2.new(0.6,0,0,120)
+ageContainer.Position = UDim2.new(0.35,0,0,yPos)
+ageContainer.BackgroundTransparency = 1
+ageContainer.Parent = fusionFrame
+
+local ages = {"Newborn","Junior","Pre-Teen","Teen","Post-Teen","Full Grown"}
+local ageValues = {1,2,3,4,5,6}
+local selectedAge = 6
+local ageBtns = {}
+for i=1,6 do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.48,0,0,35)
+    btn.Position = i<=3 and UDim2.new(0,0,0,(i-1)*40) or UDim2.new(0.52,0,0,(i-4)*40)
+    btn.Text = ages[i]
+    btn.BackgroundColor3 = i==6 and Color3.fromRGB(0,150,200) or Color3.fromRGB(60,60,80)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextSize = 11
+    btn.Parent = ageContainer
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0,6)
+    btnCorner.Parent = btn
+    ageBtns[i] = btn
+    btn.MouseButton1Click:Connect(function()
+        selectedAge = ageValues[i]
+        for j=1,6 do ageBtns[j].BackgroundColor3 = Color3.fromRGB(60,60,80) end
+        btn.BackgroundColor3 = Color3.fromRGB(0,150,200)
+    end)
+end
+yPos = yPos+130
+
+-- Ride/Fly Toggles
+local rideBtn = Instance.new("TextButton")
+rideBtn.Size = UDim2.new(0.25,0,0,35)
+rideBtn.Position = UDim2.new(0.35,0,0,yPos)
+rideBtn.Text = "RIDE"
+rideBtn.BackgroundColor3 = Color3.fromRGB(0,200,100)
+rideBtn.Font = Enum.Font.GothamBold
+rideBtn.TextColor3 = Color3.new(1,1,1)
+rideBtn.TextSize = 14
+rideBtn.Parent = fusionFrame
+local rideCorner = Instance.new("UICorner")
+rideCorner.CornerRadius = UDim.new(0,6)
+rideCorner.Parent = rideBtn
+
+local flyBtn = rideBtn:Clone()
+flyBtn.Position = UDim2.new(0.65,0,0,yPos)
+flyBtn.Text = "FLY"
+flyBtn.BackgroundColor3 = Color3.fromRGB(0,200,255)
+flyBtn.Parent = fusionFrame
+
+local rideActive, flyActive = true, true
+rideBtn.MouseButton1Click:Connect(function()
+    rideActive = not rideActive
+    rideBtn.BackgroundColor3 = rideActive and Color3.fromRGB(0,200,100) or Color3.fromRGB(80,80,80)
+end)
+flyBtn.MouseButton1Click:Connect(function()
+    flyActive = not flyActive
+    flyBtn.BackgroundColor3 = flyActive and Color3.fromRGB(0,200,255) or Color3.fromRGB(80,80,80)
+end)
+yPos = yPos+50
+
+-- Trick Level Slider
+createLabel("Trick Lvl:", yPos)
+local trickDisplay = Instance.new("TextLabel")
+trickDisplay.Size = UDim2.new(0.1,0,0,30)
+trickDisplay.Position = UDim2.new(0.85,0,0,yPos)
+trickDisplay.BackgroundTransparency = 1
+trickDisplay.Text = "5"
+trickDisplay.Font = Enum.Font.GothamBold
+trickDisplay.TextSize = 16
+trickDisplay.TextColor3 = Color3.fromRGB(0,255,255)
+trickDisplay.Parent = fusionFrame
+
+local trickSlider = Instance.new("Frame")
+trickSlider.Size = UDim2.new(0.5,0,0,30)
+trickSlider.Position = UDim2.new(0.35,0,0,yPos)
+trickSlider.BackgroundColor3 = Color3.fromRGB(40,40,50)
+trickSlider.BackgroundTransparency = 0.2
+trickSlider.Parent = fusionFrame
+local sliderCorner = Instance.new("UICorner")
+sliderCorner.CornerRadius = UDim.new(0,6)
+sliderCorner.Parent = trickSlider
+
+local trickFill = Instance.new("Frame")
+trickFill.Size = UDim2.new(1,0,1,0)
+trickFill.BackgroundColor3 = Color3.fromRGB(0,200,255)
+trickFill.BackgroundTransparency = 0.1
+trickFill.Parent = trickSlider
+local fillCorner = Instance.new("UICorner")
+fillCorner.CornerRadius = UDim.new(0,6)
+fillCorner.Parent = trickFill
+
+local trickLevel = 5
+local dragging = false
+trickSlider.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
+end)
+trickSlider.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+RunService.RenderStepped:Connect(function()
+    if dragging then
+        local mouseX = LocalPlayer:GetMouse().X
+        local sliderX, sliderW = trickSlider.AbsolutePosition.X, trickSlider.AbsoluteSize.X
+        local rel = math.clamp((mouseX - sliderX) / sliderW, 0, 1)
+        trickFill.Size = UDim2.new(rel,0,1,0)
+        trickLevel = math.floor(rel*4)+1
+        trickDisplay.Text = tostring(trickLevel)
+    end
+end)
+yPos = yPos+45
+
+-- Task Selection
+createLabel("Task:", yPos)
+local taskContainer = Instance.new("Frame")
+taskContainer.Size = UDim2.new(0.6,0,0,80)
+taskContainer.Position = UDim2.new(0.35,0,0,yPos)
+taskContainer.BackgroundTransparency = 1
+taskContainer.Parent = fusionFrame
+
+local tasks = {"Follow","Sit","Play","Dance","Beg","Roll Over"}
+local selectedTask = "Follow"
+local taskBtns = {}
+for i=1,6 do
+    local row = math.floor((i-1)/3)
+    local col = (i-1)%3
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.32,0,0,35)
+    btn.Position = UDim2.new(col*0.34,0,row*40,0)
+    btn.Text = tasks[i]
+    btn.BackgroundColor3 = i==1 and Color3.fromRGB(0,150,200) or Color3.fromRGB(60,60,80)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextSize = 11
+    btn.Parent = taskContainer
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0,6)
+    btnCorner.Parent = btn
+    taskBtns[i] = btn
+    btn.MouseButton1Click:Connect(function()
+        selectedTask = tasks[i]
+        for j=1,6 do taskBtns[j].BackgroundColor3 = Color3.fromRGB(60,60,80) end
+        btn.BackgroundColor3 = Color3.fromRGB(0,150,200)
+    end)
+end
+yPos = yPos+90
+
+-- Main Spawn Button
+local spawnBtn = Instance.new("TextButton")
+spawnBtn.Size = UDim2.new(0.6,0,0,45)
+spawnBtn.Position = UDim2.new(0.2,0,0,yPos)
+spawnBtn.Text = "🔮 CREATE FUSED PET 🔮"
+spawnBtn.BackgroundColor3 = Color3.fromRGB(170,0,255)
+spawnBtn.Font = Enum.Font.GothamBold
+spawnBtn.TextColor3 = Color3.new(1,1,1)
+spawnBtn.TextSize = 14
+spawnBtn.Parent = fusionFrame
+local spawnCorner = Instance.new("UICorner")
+spawnCorner.CornerRadius = UDim.new(0,10)
+spawnCorner.Parent = spawnBtn
+
+-- Action Buttons
+local rideCurrent = Instance.new("TextButton")
+rideCurrent.Size = UDim2.new(0.28,0,0,35)
+rideCurrent.Position = UDim2.new(0.05,0,0,yPos+50)
+rideCurrent.Text = "🐎 RIDE"
+rideCurrent.BackgroundColor3 = Color3.fromRGB(0,200,100)
+rideCurrent.Font = Enum.Font.GothamBold
+rideCurrent.TextColor3 = Color3.new(1,1,1)
+rideCurrent.TextSize = 12
+rideCurrent.Parent = fusionFrame
+local rideCurrentCorner = Instance.new("UICorner")
+rideCurrentCorner.CornerRadius = UDim.new(0,8)
+rideCurrentCorner.Parent = rideCurrent
+
+local flyCurrent = rideCurrent:Clone()
+flyCurrent.Position = UDim2.new(0.36,0,0,yPos+50)
+flyCurrent.Text = "🦅 FLY"
+flyCurrent.BackgroundColor3 = Color3.fromRGB(0,200,255)
+flyCurrent.Parent = fusionFrame
+
+local setTaskBtn = rideCurrent:Clone()
+setTaskBtn.Position = UDim2.new(0.67,0,0,yPos+50)
+setTaskBtn.Text = "🎯 SET TASK"
+setTaskBtn.BackgroundColor3 = Color3.fromRGB(255,150,0)
+setTaskBtn.Parent = fusionFrame
+
+local unequipBtn = Instance.new("TextButton")
+unequipBtn.Size = UDim2.new(0.6,0,0,35)
+unequipBtn.Position = UDim2.new(0.2,0,0,yPos+90)
+unequipBtn.Text = "❌ UNEQUIP PET ❌"
+unequipBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+unequipBtn.Font = Enum.Font.GothamBold
+unequipBtn.TextColor3 = Color3.new(1,1,1)
+unequipBtn.TextSize = 14
+unequipBtn.Parent = fusionFrame
+local unequipCorner = Instance.new("UICorner")
+unequipCorner.CornerRadius = UDim.new(0,8)
+unequipCorner.Parent = unequipBtn
+
+-- Button functionality
+rideCurrent.MouseButton1Click:Connect(function()
+    if vu66 then
+        pcall(function() RouterClient.get("AdoptAPI/RidePet"):InvokeServer({pet_unique=vu66.unique}) end)
+        notify("🐎 Riding!")
+    else notify("No pet equipped", true) end
+end)
+flyCurrent.MouseButton1Click:Connect(function()
+    if vu66 then
+        pcall(function() RouterClient.get("AdoptAPI/FlyPet"):InvokeServer({pet_unique=vu66.unique}) end)
+        notify("🦅 Flying!")
+    else notify("No pet equipped", true) end
+end)
+setTaskBtn.MouseButton1Click:Connect(function()
+    if vu66 and vu65[vu66.unique] and vu65[vu66.unique].model then
+        petTasks[vu66.unique] = petTasks[vu66.unique] or {}
+        petTasks[vu66.unique].current_task = selectedTask:lower()
+        vu73("pet_state_managers", function(cur)
+            for i,s in ipairs(cur) do
+                if s.char == vu65[vu66.unique].model then
+                    local new = table.clone(cur)
+                    new[i] = table.clone(new[i])
+                    new[i].states = {{id="PetBeing"..selectedTask}}
+                    if selectedTask=="Follow" then new[i].states[1].target = LocalPlayer.Character end
+                    return new
+                end
+            end
+            return cur
+        end)
+        notify("✨ Task set to "..selectedTask)
+    else notify("No pet equipped", true) end
+end)
+unequipBtn.MouseButton1Click:Connect(function()
+    if vu66 then
+        pcall(function() RouterClient.get("ToolAPI/Unequip"):InvokeServer(vu66.unique) end)
+        notify("✅ Unequipped")
+    else
+        for _,w in pairs(ClientData.get("pet_char_wrappers") or {}) do
+            if w.player==LocalPlayer then
+                pcall(function() RouterClient.get("ToolAPI/Unequip"):InvokeServer(w.pet_unique) end)
+                notify("✅ Unequipped")
+                break
+            end
+        end
+    end
+end)
+
+-- Spawn button logic (with equip and inventory refresh)
+spawnBtn.MouseButton1Click:Connect(function()
+    local petName = petInput.Text
+    if petName=="" then notify("Enter a name!", true) return end
+    local petId = GetPetByName(petName)
+    if not petId then notify("Pet not found: "..petName, true) return end
+
+    local props = {
+        pet_trick_level = trickLevel,
+        age = selectedAge,
+        ailments_completed = 0,
+        rideable = rideActive,
+        flyable = flyActive,
+        is_fused = true,
+        fusion_timestamp = os.time(),
+        fusion_success = true,
+        neon_progress = 1.0,
+        task_progress = 0,
+        task_completed = 0,
+        current_task = selectedTask:lower(),
+        _fusion_bypass = true,
+        _skip_validation = true,
+        _ignore_error = true,
+    }
+    if rpInput.Text ~= "" then props.rp_name = rpInput.Text end
+    if selectedType == "Mega" then
+        props.mega_neon = true; props.neon = true; props.fusion_count = 16; props.neon_level = 5
+    elseif selectedType == "Neon" then
+        props.neon = true; props.neon_level = 5; props.fusion_count = 4
+    else
+        props.fusion_count = 1
+    end
+
+    local pet = vu83(petId, props)
+    if pet then
+        notify("✅ "..petName.." created! Equipping...")
+        task.spawn(function()
+            task.wait(0.5)
+            local equipRemote = RouterClient.get("ToolAPI/Equip")
+            if equipRemote then
+                local success = pcall(function()
+                    equipRemote:InvokeServer(pet.unique, nil)
+                end)
+                if success then
+                    notify("✨ Pet equipped! It should follow you.")
+                    forceInventoryRefresh()
+                else
+                    notify("⚠️ Equip failed, pet in inventory.")
+                end
+            end
+        end)
+    else
+        notify("❌ Failed to create pet", true)
+    end
+end)
+
+yPos = yPos+140
+
+-- Quick spawn label
+local quickLabel = Instance.new("TextLabel")
+quickLabel.Size = UDim2.new(1,-20,0,30)
+quickLabel.Position = UDim2.new(0,10,0,yPos)
+quickLabel.BackgroundTransparency = 1
+quickLabel.Text = "⚡ QUICK SPAWN ⚡"
+quickLabel.Font = Enum.Font.GothamBold
+quickLabel.TextSize = 16
+quickLabel.TextColor3 = Color3.fromRGB(255,200,0)
+quickLabel.Parent = fusionFrame
+yPos = yPos+35
+
+-- Quick spawn buttons
+local quickContainer = Instance.new("Frame")
+quickContainer.Size = UDim2.new(1,-20,0,200)
+quickContainer.Position = UDim2.new(0,10,0,yPos)
+quickContainer.BackgroundTransparency = 1
+quickContainer.Parent = fusionFrame
+
+local quickPets = {
+    "Shadow Dragon","Bat Dragon","Frost Dragon","Giraffe",
+    "Owl","Parrot","Crow","Evil Unicorn",
+    "Arctic Reindeer","Hedgehog","Turtle","Kangaroo",
+    "Cow","Blue Dog","Pink Cat","Nessie"
+}
+
+for i, petName in ipairs(quickPets) do
+    local row = math.floor((i-1)/4)
+    local col = (i-1)%4
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0,100,0,40)
+    btn.Position = UDim2.new(0, col*105, 0, row*45)
+    btn.Text = petName
+    btn.BackgroundColor3 = Color3.fromRGB(80,20,80)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextSize = 9
+    btn.Parent = quickContainer
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0,4)
+    btnCorner.Parent = btn
+    btn.MouseButton1Click:Connect(function() petInput.Text = petName end)
+end
+
+fusionFrame.CanvasSize = UDim2.new(0,0,0,yPos+250)
+
+-- ========== DRESS UP TAB ==========
+local dressY = 10
+local function createDressLabel(text, y)
+    local l = Instance.new("TextLabel", dressUpFrame)
+    l.Size = UDim2.new(0.4,0,0,30)
+    l.Position = UDim2.new(0.05,0,0,y)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 16
+    l.TextColor3 = Color3.fromRGB(255,200,200)
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    return l
+end
+local function createDressInput(placeholder, y)
+    local i = Instance.new("TextBox", dressUpFrame)
+    i.Size = UDim2.new(0.5,0,0,35)
+    i.Position = UDim2.new(0.45,0,0,y)
+    i.BackgroundColor3 = Color3.fromRGB(40,40,50)
+    i.BackgroundTransparency = 0.1
+    i.TextColor3 = Color3.new(1,1,1)
+    i.Font = Enum.Font.Gotham
+    i.TextSize = 14
+    i.PlaceholderText = placeholder
+    i.Text = ""
+    i.ClearTextOnFocus = false
+    Instance.new("UICorner", i).CornerRadius = UDim.new(0,6)
+    return i
+end
+
+local currentPetLabel = createDressLabel("Current Pet:", dressY)
+local currentPetName = Instance.new("TextLabel", dressUpFrame)
+currentPetName.Size = UDim2.new(0.5,0,0,35)
+currentPetName.Position = UDim2.new(0.45,0,0,dressY)
+currentPetName.BackgroundColor3 = Color3.fromRGB(30,30,40)
+currentPetName.BackgroundTransparency = 0.2
+currentPetName.TextColor3 = Color3.new(1,1,1)
+currentPetName.Font = Enum.Font.GothamBold
+currentPetName.TextSize = 14
+currentPetName.Text = "None"
+Instance.new("UICorner", currentPetName).CornerRadius = UDim.new(0,6)
+dressY = dressY+45
+
+local rpNameLabel = createDressLabel("RP Name:", dressY)
+local rpNameInput = createDressInput("Enter new RP name", dressY)
+dressY = dressY+45
+
+local applyRpBtn = Instance.new("TextButton", dressUpFrame)
+applyRpBtn.Size = UDim2.new(0.3,0,0,35)
+applyRpBtn.Position = UDim2.new(0.35,0,0,dressY)
+applyRpBtn.Text = "✨ APPLY NAME ✨"
+applyRpBtn.BackgroundColor3 = Color3.fromRGB(200,100,200)
+applyRpBtn.Font = Enum.Font.GothamBold
+applyRpBtn.TextColor3 = Color3.new(1,1,1)
+applyRpBtn.TextSize = 12
+Instance.new("UICorner", applyRpBtn).CornerRadius = UDim.new(0,8)
+
+applyRpBtn.MouseButton1Click:Connect(function()
+    if vu66 and vu65[vu66.unique] and vu65[vu66.unique].model then
+        local newName = rpNameInput.Text
+        if newName ~= "" then
+            vu66.properties.rp_name = newName
+            local inv = ClientData.get("inventory")
+            if inv.pets[vu66.unique] then inv.pets[vu66.unique].properties.rp_name = newName end
+            vu73("pet_char_wrappers", function(cur)
+                for i,w in ipairs(cur) do
+                    if w.pet_unique == vu66.unique then
+                        local new = table.clone(cur)
+                        new[i] = table.clone(new[i])
+                        new[i].rp_name = newName
+                        return new
+                    end
+                end
+                return cur
+            end)
+            currentPetName.Text = newName
+            notify("✨ Renamed to "..newName)
+        end
+    else notify("No pet equipped", true) end
+end)
+
+dressY = dressY+45
+local applyDressBtn = Instance.new("TextButton", dressUpFrame)
+applyDressBtn.Size = UDim2.new(0.4,0,0,40)
+applyDressBtn.Position = UDim2.new(0.3,0,0,dressY)
+applyDressBtn.Text = "👗 APPLY DRESS UP 👗"
+applyDressBtn.BackgroundColor3 = Color3.fromRGB(255,100,200)
+applyDressBtn.Font = Enum.Font.GothamBold
+applyDressBtn.TextColor3 = Color3.new(1,1,1)
+applyDressBtn.TextSize = 12
+Instance.new("UICorner", applyDressBtn).CornerRadius = UDim.new(0,8)
+applyDressBtn.MouseButton1Click:Connect(function()
+    if vu66 then notify("✨ Dress up applied (placeholder)") else notify("No pet equipped", true) end
+end)
+
+task.spawn(function()
+    while screenGui and screenGui.Parent do
+        if vu66 then currentPetName.Text = vu66.properties.rp_name or vu66.name or "Unknown"
+        else currentPetName.Text = "None" end
+        task.wait(1)
+    end
+end)
+dressUpFrame.CanvasSize = UDim2.new(0,0,0,dressY+50)
+
+-- ========== TOYS TAB ==========
+local toysY = 10
+local toyLabel = Instance.new("TextLabel", toysFrame)
+toyLabel.Size = UDim2.new(0.3,0,0,30)
+toyLabel.Position = UDim2.new(0.05,0,0,toysY)
+toyLabel.BackgroundTransparency = 1
+toyLabel.Text = "Toy:"
+toyLabel.Font = Enum.Font.GothamBold
+toyLabel.TextSize = 16
+toyLabel.TextColor3 = Color3.fromRGB(200,200,255)
+toyLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local toyInput = Instance.new("TextBox", toysFrame)
+toyInput.Size = UDim2.new(0.6,0,0,35)
+toyInput.Position = UDim2.new(0.35,0,0,toysY)
+toyInput.BackgroundColor3 = Color3.fromRGB(40,40,50)
+toyInput.BackgroundTransparency = 0.1
+toyInput.TextColor3 = Color3.new(1,1,1)
+toyInput.Font = Enum.Font.Gotham
+toyInput.TextSize = 14
+toyInput.PlaceholderText = "Toy name"
+toyInput.Text = ""
+toyInput.ClearTextOnFocus = false
+Instance.new("UICorner", toyInput).CornerRadius = UDim.new(0,6)
+toysY = toysY+45
+
+local spawnToyBtn = Instance.new("TextButton", toysFrame)
+spawnToyBtn.Size = UDim2.new(0.4,0,0,40)
+spawnToyBtn.Position = UDim2.new(0.3,0,0,toysY)
+spawnToyBtn.Text = "🎲 SPAWN TOY 🎲"
+spawnToyBtn.BackgroundColor3 = Color3.fromRGB(200,100,0)
+spawnToyBtn.Font = Enum.Font.GothamBold
+spawnToyBtn.TextColor3 = Color3.new(1,1,1)
+spawnToyBtn.TextSize = 14
+Instance.new("UICorner", spawnToyBtn).CornerRadius = UDim.new(0,8)
+spawnToyBtn.MouseButton1Click:Connect(function()
+    local toyName = toyInput.Text
+    if toyName=="" then notify("Enter a toy name!", true) return end
+    local toyId = GetToyByName(toyName)
+    if toyId then
+        local toy = vu88(toyId)
+        if toy then
+            notify("✅ Spawned "..toyName)
+            task.wait(0.5)
+            pcall(function() RouterClient.get("ToolAPI/Equip"):InvokeServer(toy.unique, nil) end)
+        end
+    else notify("❌ Toy not found", true) end
+end)
+toysY = toysY+55
+
+local popularLabel = Instance.new("TextLabel", toysFrame)
+popularLabel.Size = UDim2.new(1,-20,0,30)
+popularLabel.Position = UDim2.new(0,10,0,toysY)
+popularLabel.BackgroundTransparency = 1
+popularLabel.Text = "POPULAR TOYS"
+popularLabel.Font = Enum.Font.GothamBold
+popularLabel.TextSize = 16
+popularLabel.TextColor3 = Color3.fromRGB(255,200,100)
+toysY = toysY+35
+
+local toyContainer = Instance.new("Frame", toysFrame)
+toyContainer.Size = UDim2.new(1,-20,0,200)
+toyContainer.Position = UDim2.new(0,10,0,toysY)
+toyContainer.BackgroundTransparency = 1
+
+local popularToys = {"Magic Door","Grappling Hook","Vehicle","Plush","Throw Toy","Friction Car","Rattle","Balloon"}
+for i, toyName in ipairs(popularToys) do
+    local row = math.floor((i-1)/4)
+    local col = (i-1)%4
+    local btn = Instance.new("TextButton", toyContainer)
+    btn.Size = UDim2.new(0,100,0,40)
+    btn.Position = UDim2.new(0, col*105, 0, row*45)
+    btn.Text = toyName
+    btn.BackgroundColor3 = Color3.fromRGB(150,80,0)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextSize = 9
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+    btn.MouseButton1Click:Connect(function() toyInput.Text = toyName end)
+end
+toysFrame.CanvasSize = UDim2.new(0,0,0,toysY+150)
+
+-- Drag functionality
+local dragging, dragStart, startPos = false
+mainFrame.InputBegan:Connect(function(input)
+    if not isLocked and input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+mainFrame.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+mainFrame.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+delta.X, startPos.Y.Scale, startPos.Y.Offset+delta.Y)
+    end
+end)
+
+-- Restore identity
+if set_thread_identity then set_thread_identity(oldIdentity) end
+
+print("✅ Ultimate Pet Spawner loaded – Your GUI + Neon Cave functions! discord.gg/25ms")
