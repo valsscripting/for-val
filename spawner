@@ -1,4 +1,4 @@
--- bypassing equipping for spawner
+-- bypassing equipping for spawner -
 local originalRemotes = {}
 local routerInit = debug.getupvalue(
     require(game.ReplicatedStorage.Fsys).load('RouterClient').init,
